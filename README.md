@@ -1,5 +1,7 @@
 # LLM Adversarial Validation Gate
 
+![CI](https://github.com/mpuodziukas-labs/llm-adversarial-gate/actions/workflows/ci.yml/badge.svg)
+
 A reproducible, offline adversarial-validation gate for LLM outputs covering
 five OWASP LLM Top 10 threat classes. Ships with a bundled synthetic corpus,
 a deterministic evaluator, and a full pytest suite — no API keys required.
