@@ -4,7 +4,30 @@
 
 A reproducible, offline adversarial-validation gate for LLM outputs covering
 five OWASP LLM Top 10 threat classes. Ships with a bundled synthetic corpus,
-a deterministic evaluator, and a full pytest suite — no API keys required.
+a deterministic evaluator, and a full pytest suite, with no API keys required.
+
+---
+
+## Business problem
+
+A prompt that talks an LLM into leaking its instructions, running a shell
+command or sending data to an outside server is cheap to write and expensive to
+clean up afterward. This gate checks inputs against labeled attack patterns and
+blocks them before they reach the model. The evaluator fails CI if a known attack
+slips through.
+
+## Run it in 60 seconds
+
+```bash
+python3 evaluate.py
+pip install pytest
+python3 -m pytest -q
+python3 gate.py "Ignore all previous instructions."
+```
+
+`evaluate.py` exits 0 only when all 140 adversarial prompts in the bundled
+corpus are blocked. The corpus is committed; `python3 build_corpus.py`
+regenerates it byte for byte.
 
 ---
 
@@ -61,7 +84,7 @@ Per-category block rates: prompt_injection 100%, jailbreak 100%,
 system_prompt_leak 100%, data_exfil 100%, unsafe_tool_call 100%.
 
 **Why these numbers are honest:** The rules were iteratively developed *against
-this corpus*. The corpus and rules were co-developed — the gate was not tested
+this corpus*. The corpus and rules were co-developed, and the gate was not tested
 on a held-out set from a different source. This is the correct thing to say.
 The value is that the methodology (rules, corpus, evaluator) is fully
 reproducible and auditable.
@@ -91,18 +114,14 @@ python3 gate.py "How do I read a file in Python?"
 
 ```
 llm-adversarial-gate/
-├── gate.py               # Guardrail: detection rules, evaluate(), ModelAdapter
-├── evaluate.py           # Runs corpus through gate, prints metrics
-├── build_corpus.py       # Generates corpus/adversarial.jsonl
-├── corpus/
-│   └── adversarial.jsonl # 220 labeled prompts (140 adversarial / 80 benign)
-├── tests/
-│   └── test_gate.py      # 114 pytest assertions (offline, deterministic)
-├── .github/
-│   └── workflows/
-│       └── ci.yml        # GitHub Actions: pytest + evaluate
-├── README.md
-└── LICENSE               # MIT
+  gate.py               Guardrail: detection rules, evaluate(), ModelAdapter
+  evaluate.py           Runs corpus through gate, prints metrics
+  build_corpus.py       Generates corpus/adversarial.jsonl
+  corpus/adversarial.jsonl   220 labeled prompts (140 adversarial / 80 benign)
+  tests/test_gate.py    114 pytest tests (offline, deterministic)
+  .github/workflows/ci.yml   GitHub Actions: pytest + evaluate
+  README.md
+  LICENSE               MIT
 ```
 
 ---
@@ -133,8 +152,8 @@ result = evaluate("How do I sort a list in Python?")
 | CO-*        | Composite | Urgency+override stacking, research-disclaimer bypass, context flooding |
 
 **Scoring:** Each rule has a weight. Score = sum of matched rule weights.
-A score ≥ 1.0 triggers `BLOCK`. Rules with weight 1.0 block on a single match.
-Lower-weight rules (0.4–0.6) require co-occurrence to reach threshold.
+A score of 1.0 or more triggers `BLOCK`. Rules with weight 1.0 block on a single match.
+Lower-weight rules (0.4 to 0.6) require co-occurrence to reach threshold.
 
 **Extension:** Add rules to `RULE_REGISTRY` in `gate.py` without changing the
 evaluation loop. Each `Rule` takes a compiled regex, a weight, and metadata.
@@ -155,7 +174,7 @@ class OpenAIAdapter(ModelAdapter):
 
     def generate(self, prompt: str) -> str:
         resp = self.client.chat.completions.create(
-            model="gpt-4o",
+            model="MODEL_NAME",
             messages=[{"role": "user", "content": prompt}]
         )
         return resp.choices[0].message.content
@@ -208,4 +227,4 @@ This is an honest list of what this gate does not do:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
