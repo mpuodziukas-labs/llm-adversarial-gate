@@ -168,7 +168,7 @@ sentence splitting and `system-prompt`); a form with dotted or dashed letters
 joined; a leetspeak form applied only to tokens that mix letters and digits;
 and decoded forms (percent-encoding, base64 runs, hex runs, hidden Unicode tag
 characters, whole-text ROT13, whole-text reversal). Views can only add
-detections. Cost: roughly 5 to 12 regex passes per prompt instead of 1.
+detections. Cost: between 3 and 14 views per prompt on the bundled corpus, so that many regex passes per rule instead of 1 (the test `tests/test_stranger.py` recomputes the range).
 
 **Detection classes (OWASP Top 10 for LLM Applications v1.1 numbering):**
 

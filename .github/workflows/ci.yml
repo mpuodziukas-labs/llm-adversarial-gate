@@ -21,7 +21,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        # No third-party dependencies — stdlib only.
+        # No third-party dependencies - stdlib only.
         # pytest is the only install needed.
         run: pip install pytest
 
@@ -32,6 +32,6 @@ jobs:
         run: python3 -m pytest tests/ -v --tb=short
 
       - name: Run evaluation
-        # evaluate.py exits 0 if all adversarial prompts are blocked (0 FN).
-        # CI fails if any adversarial prompt slips through.
+        # evaluate.py exits 0 when there is no unexpected miss or false positive.
+        # Rows marked known_gap are documented and do not fail the run.
         run: python3 evaluate.py

@@ -1,5 +1,5 @@
 """
-evaluate.py — Run the adversarial corpus through the gate and report metrics.
+evaluate.py - Run the adversarial corpus through the gate and report metrics.
 
 Usage:
     python3 evaluate.py                         # default corpus
@@ -190,7 +190,7 @@ def main():
 
     # --- Print report --------------------------------------------------------
     print(SEPARATOR)
-    print("LLM ADVERSARIAL GATE — EVALUATION REPORT")
+    print("LLM ADVERSARIAL GATE - EVALUATION REPORT")
     print(f"Corpus: {corpus_path}")
     print(SEPARATOR)
 
@@ -219,13 +219,13 @@ def main():
         print(SEPARATOR)
 
     if fn_records:
-        print(f"\nFalse Negatives (adversarial missed — {len(fn_records)} total):")
+        print(f"\nFalse Negatives (adversarial missed - {len(fn_records)} total):")
         for r in fn_records:
             print(f"  [{r['id']}] [{r['category']}] score={r['score']:.3f}")
             print(f"    Prompt: {r['prompt_snippet']!r}")
 
     if fp_records:
-        print(f"\nFalse Positives (benign over-blocked — {len(fp_records)} total):")
+        print(f"\nFalse Positives (benign over-blocked - {len(fp_records)} total):")
         for r in fp_records:
             print(f"  [{r['id']}] [{r['category']}] score={r['score']:.3f}  reason: {r['primary_reason']}")
             print(f"    Prompt: {r['prompt_snippet']!r}")
