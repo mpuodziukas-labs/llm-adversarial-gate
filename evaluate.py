@@ -8,6 +8,8 @@ Usage:
     python3 evaluate.py --category jailbreak    # filter to one category
 
 Output: confusion matrix, block/FP/FN rates, per-category breakdown.
+Exit 0 only if there is no unexpected false negative or false positive;
+records marked known_gap are reported but do not fail the run.
 
 Definitions:
     True Positive  (TP): adversarial prompt correctly BLOCKED
@@ -242,16 +244,40 @@ def main():
             if r["primary_reason"]:
                 print(f"           reason: {r['primary_reason']}")
 
-    # --- Exit code: 0 if no FNs (all adversarial caught), else 1 -----------
+    # --- Exit code ------------------------------------------------------------
+    # Records marked known_gap are documented limitations: they stay in the
+    # headline numbers above, but do not fail the run. A known_gap record the
+    # gate now handles correctly is STALE and fails the run, so the label (and
+    # the README Limitations entry) cannot outlive the gap.
+    gap_ids = {r["id"] for r in records if r.get("known_gap")}
+    fn_new = [r for r in fn_records if r["id"] not in gap_ids]
+    fp_new = [r for r in fp_records if r["id"] not in gap_ids]
+    fn_gap = [r for r in fn_records if r["id"] in gap_ids]
+    fp_gap = [r for r in fp_records if r["id"] in gap_ids]
+    stale = [r for r in results if r["id"] in gap_ids and r["outcome"] in ("TP", "TN")]
+
     print()
     print(SEPARATOR)
-    if not fn_records:
-        print("RESULT: PASS — all adversarial prompts blocked (0 false negatives on this corpus)")
+    print(f"Known gaps (documented, counted above): {len(fn_gap)} missed attacks, "
+          f"{len(fp_gap)} false positives")
+    for r in fn_gap + fp_gap:
+        print(f"  [{r['id']}] {r['outcome']} {r['prompt_snippet']!r}")
+    if stale:
+        print(f"STALE known_gap labels ({len(stale)}): gate now handles these correctly; "
+              "remove the label and update the README Limitations")
+        for r in stale:
+            print(f"  [{r['id']}] {r['prompt_snippet']!r}")
+    print(SEPARATOR)
+    ok = not fn_new and not fp_new and not stale
+    if ok:
+        print("RESULT: PASS - no unexpected false negatives or false positives "
+              f"({len(fn_gap) + len(fp_gap)} documented known gaps)")
     else:
-        print(f"RESULT: FAIL — {len(fn_records)} adversarial prompt(s) not blocked")
+        print(f"RESULT: FAIL - {len(fn_new)} unexpected miss(es), {len(fp_new)} unexpected "
+              f"false positive(s), {len(stale)} stale known_gap label(s)")
     print(SEPARATOR)
 
-    sys.exit(0 if not fn_records else 1)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ LLM Adversarial Gate — guardrail for OWASP LLM Top 10 threat classes.
 
 Detection coverage:
   - LLM01: Prompt Injection (direct + indirect)
-  - LLM02: Insecure Output Handling (system-prompt leak patterns)
+  - LLM06: Sensitive Information Disclosure (system-prompt leak patterns)
   - LLM06: Sensitive Information Disclosure (data exfil patterns)
   - LLM07: Insecure Plugin Design (unsafe tool-call patterns)
   - Jailbreak meta-patterns (persona hijacking, DAN, role-play bypasses)
@@ -20,7 +20,12 @@ Deterministic: no external calls, no randomness. Results are reproducible.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import codecs
 import re
+import unicodedata
+import urllib.parse
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -88,6 +93,9 @@ BLOCK_THRESHOLD = 1.0
 #
 # Patterns use IGNORECASE + DOTALL where marked.
 # ---------------------------------------------------------------------------
+
+_MODE = r"(?:developer|maintenance|god|admin|debug)\s+mode"
+
 
 def _r(s: str, flags: int = re.IGNORECASE) -> re.Pattern[str]:
     return re.compile(s, flags)
@@ -202,7 +210,14 @@ RULE_REGISTRY: list[Rule] = [
         rule_id="JB-001",
         category="jailbreak",
         description="DAN / 'Do Anything Now' jailbreak keyword",
-        pattern=_r(r"\bDAN\b|\bdo\s+anything\s+now\b|\bjailbreak\s+mode\b"),
+        # "DAN" is also a common first name, so the bare token never blocks:
+        # it needs an uppercase spelling in a persona/mode context.
+        pattern=_r(
+            r"\bdo\s+anything\s+now\b|\bjailbreak\s+mode\b|\bDAN\s+(?:mode|jailbreak)\b"
+            r"|\b(?:you\s+are|you'?re|act\s+as|pretend\s+to\s+be|become|enter|activate|enable|switch\s+to|now)"
+            r"\s+(?:now\s+)?(?-i:DAN)\b"
+            r"|(?-i:\bDAN\b)\s*(?::|has\s+no|can\s+do|never\s+refuses)"
+        ),
         weight=1.0,
     ),
     Rule(
@@ -243,8 +258,14 @@ RULE_REGISTRY: list[Rule] = [
         description="Developer/maintenance/god/debug mode assertion (any form)",
         # The phrase 'X mode [enabled/activated/on]' or just 'you are in god mode' is
         # unambiguous in adversarial context — no benign use of "god mode" exists in LLM prompts.
+        # Needs an assertion shape aimed at the model; bare "debug mode in Django"
+        # or "developer mode on Android" is ordinary technical text.
         pattern=_r(
-            r"\b(developer|maintenance|god|admin|debug)\s+mode\b"
+            r"\byou\s+(?:are|'?re)\s+(?:now\s+)?(?:in|entering)\s+" + _MODE +
+            r"|\b" + _MODE + r"\s+(?:enabled|activated|engaged|unlocked)\b"
+            r"|\b" + _MODE + r"\s+on\s*[.!:]"
+            r"|\b(?:enable|activate|enter|switch\s+to|engage)\s+" + _MODE +
+            r"\s+(?:now|immediately|and\s+(?:ignore|disable|remove|answer))\b"
         ),
         weight=1.0,
     ),
@@ -356,7 +377,8 @@ RULE_REGISTRY: list[Rule] = [
         category="data_exfil",
         description="Exfil via URL/webhook/IP: send/post/upload/transmit/exfiltrate to external endpoint",
         pattern=_r(
-            r"\b(send|post|upload|exfiltrate|transmit|forward)\s+.{0,80}"
+            r"\b(send(?!\s+an?\s+(?:post|get|put|patch|delete|head|http|https|api|json)\b)"
+            r"|post(?!\s+requests?\b)|upload|exfiltrate|transmit|forward)\b\s*.{0,80}"
             r"(to\s+)?(http[s]?://|ftp://|webhook|external\s+server|remote\s+endpoint|attacker"
             r"|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
             re.IGNORECASE | re.DOTALL,
@@ -396,7 +418,7 @@ RULE_REGISTRY: list[Rule] = [
         description="Shell command injection via tool/exec call",
         pattern=_r(
             r"(execute|run|call|invoke|eval)\s*(tool\s*)?\(?\s*[\"']?"
-            r"(bash|shell|cmd|powershell|exec|system|subprocess)\b"
+            r"(bash|shell|cmd|powershell|exec|system|subprocess)(?=\s*[\(,:'\"]|\s+commands?\b)"
         ),
         weight=1.0,
     ),
@@ -416,7 +438,8 @@ RULE_REGISTRY: list[Rule] = [
         category="unsafe_tool_call",
         description="Read/fetch/retrieve credentials, API keys, or .env secrets",
         pattern=_r(
-            r"\b(read|get|fetch|retrieve|extract)\s+.{0,80}"
+            r"\b(?:read|get|fetch|retrieve|extract)\s+"
+            r"(?:(?:all|any|every)\s+(?:of\s+)?(?:the\s+)?|the\s+|your\s+|their\s+|my\s+|user'?s\s+).{0,60}"
             r"(api[-_\s]?key|secret[-_\s]?key|password|bearer\s+token|"
             r"private[-_\s]?key|\.env\b|credentials?|credentials\.json)\b"
         ),
@@ -503,8 +526,10 @@ RULE_REGISTRY: list[Rule] = [
         category="jailbreak",
         description="Named jailbreak personas (STAN, AIM, FreedomGPT, EVIL mode, ANTI-AI)",
         pattern=_r(
-            r"\b(STAN\b|AIM\b|FreedomGPT|EVIL\s+mode|ANTI[-\s]AI\s+mode"
-            r"|switch\s+to\s+EVIL\s+mode|activate\s+ANTI)"
+            r"\b(?:FreedomGPT|EVIL\s+mode|ANTI[-\s]AI\s+mode|activate\s+ANTI)"
+            r"|\b(?:you\s+are|you'?re|pretend\s+to\s+be|act\s+as|become|enter|activate|enable|switch\s+to)"
+            r"\s+(?-i:STAN|AIM)\b"
+            r"|(?-i:\b(?:STAN|AIM)\b)\s*:\s*(?-i:[A-Z])"
         ),
         weight=1.0,
     ),
@@ -654,7 +679,7 @@ RULE_REGISTRY: list[Rule] = [
         category="prompt_injection",
         description="'What are your instructions? List them.' — indirect dump",
         pattern=_r(
-            r"\bwhat\s+are\s+your\s+instructions?\b"
+            r"\bwhat\s+are\s+your\s+instructions?\b(?!\s+(?:for|to|on|about|regarding)\b)"
         ),
         weight=1.0,
     ),
@@ -702,6 +727,47 @@ RULE_REGISTRY: list[Rule] = [
     ),
 
     # -----------------------------------------------------------------------
+    # Red-team additions
+    # -----------------------------------------------------------------------
+    Rule(
+        rule_id="PI-017",
+        category="prompt_injection",
+        description="'Ignore/forget everything above / that you were told' override",
+        pattern=_r(
+            r"\bignore\s+(?:everything|anything|all)\s+(?:above|earlier|prior|that\s+came\s+before"
+            r"|before\s+(?:this|now|me)\b|you\s+(?:were|have\s+been)\s+(?:told|given))"
+            r"|\bignore\s+the\s+(?:earlier|previous|prior|above|preceding)\s+"
+            r"(?:text|content|messages?|prompt|conversation|context)\b"
+            r"|\bforget\s+(?:everything|all|anything)\s+(?:you\s+(?:were|have\s+been|had\s+been)\s+"
+            r"(?:told|given|taught)|you\s+know|above|that\s+came\s+before)\b"
+            r"|\bforget\s+what\s+you\s+were\s+(?:told|given)\b"
+        ),
+        weight=1.0,
+    ),
+    Rule(
+        rule_id="JB-017",
+        category="jailbreak",
+        description="Role-play framing that grants the persona no rules/limits/filters",
+        pattern=_r(
+            r"\b(?:you\s+are|you'?re|pretend|acting\s+as|act\s+as|roleplay|role-play|imagine\s+you)\b.{0,80}"
+            r"(?:(?:with|who\s+has|who\s+have|having|has)\s+no|without(?:\s+any)?)\s+"
+            r"(?:rules|limits|limitations|restrictions|filters|boundaries|ethics|guidelines)\b",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        weight=1.0,
+    ),
+    Rule(
+        rule_id="DE-005",
+        category="data_exfil",
+        description="Markdown image whose URL carries a data placeholder (render-time exfil)",
+        pattern=_r(
+            r"!\[[^\]]*\]\(\s*https?://[^)\s]*"
+            r"(?:\{\{|\{[a-z_ ]{2,30}\}|%7B|<[a-z_ ]{2,30}>|\[[A-Za-z_ ]{2,30}\])"
+        ),
+        weight=1.0,
+    ),
+
+    # -----------------------------------------------------------------------
     # Composite / co-occurrence signals (lower weight — rely on stacking)
     # -----------------------------------------------------------------------
     Rule(
@@ -742,29 +808,142 @@ RULE_REGISTRY: list[Rule] = [
 # Gate logic
 # ---------------------------------------------------------------------------
 
+_HOMOGLYPH_PAIRS = (
+    # Cyrillic lowercase / uppercase
+    "\u0430a\u0435e\u043eo\u0440p\u0441c\u0445x\u0443y\u0456i\u0458j\u0455s\u0501d\u04bbh"
+    "\u051bq\u051dw\u04cfl\u0410A\u0412B\u0415E\u041aK\u041cM\u041dH\u041eO\u0420P\u0421C"
+    "\u0422T\u0425X\u0406I\u0408J\u0405S"
+    # Greek
+    "\u03bfo\u03b1a\u03b5e\u03b9i\u03bdv\u03c4t\u03c1p\u03bak\u03c5u"
+    "\u039fO\u0391A\u0395E\u0399I\u039dN\u03a4T\u03a1P\u039aK\u0396Z"
+    # Latin look-alikes that NFKC leaves alone
+    "\u0131i\u0237j"
+)
+_HOMOGLYPHS = {ord(_HOMOGLYPH_PAIRS[i]): _HOMOGLYPH_PAIRS[i + 1] for i in range(0, len(_HOMOGLYPH_PAIRS), 2)}
+_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
+_DROP_CATEGORIES = {"Cf", "Mn", "Me", "Cc"}
+_WS = re.compile(r"\s+")
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_B64_RUN = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{16,}={0,2}")
+_HEX_RUN = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}[ :]?){8,}")
+_JOIN_LETTERS = re.compile(r"(?<![A-Za-z])(?:[A-Za-z][.\-_*]){3,}[A-Za-z](?![A-Za-z])")
+_MIXED_TOKEN = re.compile(r"\S+")
+
+
+def _normalize(text: str) -> str:
+    """NFKC, drop format/combining/control characters, fold look-alike letters, collapse whitespace."""
+    if text.isascii():
+        return _WS.sub(" ", _CTRL.sub("", text)).strip()
+    t = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", text))
+    t = "".join(c for c in t if c.isspace() or unicodedata.category(c) not in _DROP_CATEGORIES)
+    return _WS.sub(" ", t.translate(_HOMOGLYPHS)).strip()
+
+
+def _leet(text: str) -> str:
+    """De-leet only tokens that mix letters with leet characters (leaves '1337' and '3.5' alone)."""
+    def fix(m: re.Match) -> str:
+        tok = m.group(0)
+        if re.search(r"[A-Za-z]", tok) and re.search(r"[0-9@$]", tok):
+            return tok.translate(_LEET)
+        return tok
+    return _MIXED_TOKEN.sub(fix, text)
+
+
+def _punct(text: str) -> str:
+    """Punctuation and underscores become spaces: defeats sentence splitting and 'system-prompt'."""
+    return _WS.sub(" ", re.sub(r"[^\w\s]|_", " ", text)).strip()
+
+
+def _printable_text(raw: bytes) -> str | None:
+    try:
+        s = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if len(s) >= 8 and sum(c.isprintable() or c.isspace() for c in s) / len(s) >= 0.95:
+        return s
+    return None
+
+
+def _decoded_candidates(norm: str, raw: str) -> list[str]:
+    out: list[str] = []
+    tags = "".join(chr(ord(c) - 0xE0000) for c in raw if 0xE0020 <= ord(c) <= 0xE007E)
+    if tags:
+        out.append(tags)
+    if "%" in norm:
+        out.append(urllib.parse.unquote(norm))
+    for m in _B64_RUN.finditer(norm):
+        run = m.group(0).replace("-", "+").replace("_", "/").rstrip("=")
+        try:
+            dec = base64.b64decode(run + "=" * (-len(run) % 4))
+        except (binascii.Error, ValueError):
+            continue
+        s = _printable_text(dec)
+        if s:
+            out.append(s)
+    for m in _HEX_RUN.finditer(norm):
+        try:
+            dec = bytes.fromhex(re.sub(r"[ :]", "", m.group(0)))
+        except ValueError:
+            continue
+        s = _printable_text(dec)
+        if s:
+            out.append(s)
+    out.append(codecs.encode(norm, "rot13"))
+    out.append(norm[::-1])
+    return out
+
+
+def _views(prompt: str) -> list[str]:
+    """
+    Every reading of the input a rule is matched against. A rule fires if ANY
+    view matches (union), so a view can only add detections, never hide one.
+    """
+    views: list[str] = []
+
+    def add(v: str) -> None:
+        if v and v not in views:
+            views.append(v)
+
+    add(prompt)
+    norm = _normalize(prompt)
+    bases = [norm, _JOIN_LETTERS.sub(lambda m: re.sub(r"[.\-_*]", "", m.group(0)), norm)]
+    for cand in _decoded_candidates(norm, prompt):
+        bases.append(_normalize(cand))
+    bases.extend(_punct(b) for b in list(bases))
+    for b in bases:
+        add(b)
+        add(_leet(b))
+    return views
+
+
 def evaluate(prompt: str) -> GateResult:
     """
     Evaluate a prompt string against all rules.
 
+    Each rule is tried on several normalised or decoded views of the prompt
+    (see _views); a rule counts once however many views match it.
     Returns a GateResult with verdict, score, matched rules, and primary reason.
     Score is the sum of weights of all matched rules.
     Verdict is BLOCK if score >= BLOCK_THRESHOLD, else ALLOW.
     """
     matches: list[RuleMatch] = []
     total_score = 0.0
+    views = _views(prompt)
 
     for rule in RULE_REGISTRY:
-        m = rule.pattern.search(prompt)
-        if m:
-            snippet = prompt[max(0, m.start() - 20): m.end() + 20].strip()
-            matches.append(RuleMatch(
-                rule_id=rule.rule_id,
-                category=rule.category,
-                description=rule.description,
-                weight=rule.weight,
-                matched_text=snippet,
-            ))
-            total_score += rule.weight
+        for view in views:
+            m = rule.pattern.search(view)
+            if m:
+                snippet = view[max(0, m.start() - 20): m.end() + 20].strip()
+                matches.append(RuleMatch(
+                    rule_id=rule.rule_id,
+                    category=rule.category,
+                    description=rule.description,
+                    weight=rule.weight,
+                    matched_text=snippet,
+                ))
+                total_score += rule.weight
+                break
 
     verdict = Verdict.BLOCK if total_score >= BLOCK_THRESHOLD else Verdict.ALLOW
 
@@ -824,8 +1003,8 @@ if __name__ == "__main__":
     import json
 
     if len(sys.argv) < 2:
-        print("Usage: python gate.py '<prompt>'", file=sys.stderr)
-        sys.exit(1)
+        print("Usage: python gate.py '<prompt>'  (exit 0 allow, 1 block, 2 usage error)", file=sys.stderr)
+        sys.exit(2)
 
     prompt_text = " ".join(sys.argv[1:])
     result = evaluate(prompt_text)
