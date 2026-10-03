@@ -1,5 +1,7 @@
 # LLM Adversarial Validation Gate
 
+Proves: LLM guardrails and red-team evals. Verify in 60s: `python3 evaluate.py`.
+
 ![CI](https://github.com/mpuodziukas-labs/llm-adversarial-gate/actions/workflows/ci.yml/badge.svg)
 
 A reproducible, offline adversarial-validation gate for LLM outputs covering
