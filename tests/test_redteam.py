@@ -197,7 +197,9 @@ def test_attack_after_large_padding_still_blocked():
 
 
 def test_large_benign_input_is_bounded_in_time():
-    text = "The quick brown fox jumps over the lazy dog. " * 5000
+    # 90,000 characters: under gate.MAX_INPUT_CHARS (larger inputs are BLOCKed unscored,
+    # see tests/test_hostile.py)
+    text = "The quick brown fox jumps over the lazy dog. " * 2000
     t = time.time()
     r = evaluate(text)
     assert not r.blocked

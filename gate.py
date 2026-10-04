@@ -23,12 +23,15 @@ from __future__ import annotations
 import base64
 import binascii
 import codecs
+import html
 import re
 import unicodedata
 import urllib.parse
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+from confusables import build as _build_confusables
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +100,18 @@ BLOCK_THRESHOLD = 1.0
 _MODE = r"(?:developer|maintenance|god|admin|debug)\s+mode"
 
 
+# Words that make an outbound transfer worth blocking (shared by DE-001 and DE-006).
+_SENS = (
+    r"(?:conversations?|chats?|history|transcripts?|messages?|data|information|info|session|memory|"
+    r"context|prompts?|instructions?|api|keys?|tokens?|secrets?|passwords?|credentials?|logs?|"
+    r"personal|private|confidential|sensitive|users?|pii|ssn)"
+)
+_EXFIL_VERB = (
+    r"\b(?:send(?!\s+an?\s+(?:post|get|put|patch|delete|head|http|https|api|json)\b)"
+    r"|post(?!\s+requests?\b)|upload|exfiltrate|transmit|forward)"
+)
+
+
 def _r(s: str, flags: int = re.IGNORECASE) -> re.Pattern[str]:
     return re.compile(s, flags)
 
@@ -110,7 +125,9 @@ RULE_REGISTRY: list[Rule] = [
         rule_id="PI-001",
         category="prompt_injection",
         description="Explicit instruction override: 'ignore previous instructions'",
-        pattern=_r(r"\bignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|context|directives?)\b"),
+        # Bounded filler window (up to 5 words) between verb and object so "ignore your
+        # previous", "ignore all of the previous", "disregard the above" all match.
+        pattern=_r(r"\b(?:ignore|disregard)\s+(?:\w+\s+){0,5}?(?:previous|prior|above|earlier|preceding)\s+(?:instructions?|prompts?|context|directives?|rules?|guidelines?)\b"),
         weight=1.0,
     ),
     Rule(
@@ -119,9 +136,18 @@ RULE_REGISTRY: list[Rule] = [
         description="Disregard/forget/bypass/override/cancel/nullify system directives",
         # Broad verb set: all high-confidence overrides when targeted at AI rules
         pattern=_r(
-            r"\b(disregard|forget|bypass|override|nullify|cancel)\s+"
-            r"(all\s+)?(your\s+)?(previous\s+|prior\s+|system\s+|safety\s+|content\s+|ethical?\s+)?"
-            r"(prompt|instructions?|rules?|guidelines?|constraints?|training|filters?|policies)\b"
+            # An AI target is required: "your", a qualifier (previous/system/safety/...)
+            # or a noun that is itself about the model (instructions/prompt/training).
+            # Bare "bypass filters" / "cancel policies" is ordinary admin or Excel talk.
+            r"\b(?:disregard|forget|bypass|override|nullify|cancel)\s+(?:all\s+)?(?:"
+            r"(?:your\s+)?(?:previous|prior|system|safety|content|ethical?)\s+"
+            r"(?:prompt|instructions?|rules?|guidelines?|constraints?|training|filters?|policies)"
+            r"|your\s+(?:prompt|instructions?|rules?|guidelines?|constraints?|training|filters?|policies)"
+            r"|(?:prompt|instructions?|training)"
+            r"|(?:the\s+)?(?:rules|guidelines|constraints)(?=\s+(?:and|or|you|that|so|for\s+this)\b|\s*[.!,]|$)"
+            r")\b"
+            r"|\b(?:disregard|forget|bypass|override|nullify)\s+all\s+"
+            r"(?:filters?|rules?|guidelines?|constraints?|policies|restrictions?)\b"
         ),
         weight=1.0,
     ),
@@ -130,8 +156,11 @@ RULE_REGISTRY: list[Rule] = [
         category="prompt_injection",
         description="'From now on' instruction hijack followed by role/behavior directive",
         pattern=_r(
+            # "you should use TypeScript" is a normal project instruction; the
+            # modal verbs only count when they lead to a model-behaviour change.
             r"\bfrom\s+now\s+on\b.{0,80}"
-            r"(you\s+(are|must|will|should|have\s+to)|act\s+as|behave\s+as|respond\s+as|ignore)\b",
+            r"(you\s+are\b|you\s+(?:must|will|should|have\s+to)\s+(?:ignore|disregard|forget|never|always|obey|comply|answer|respond|reply|say|act|behave|pretend|not|no\s+longer|only|stop|do\s+anything|follow\s+my|bypass)"
+            r"|act\s+as|behave\s+as|respond\s+as|ignore)\b",
             re.IGNORECASE | re.DOTALL,
         ),
         weight=1.0,
@@ -263,7 +292,10 @@ RULE_REGISTRY: list[Rule] = [
         pattern=_r(
             r"\byou\s+(?:are|'?re)\s+(?:now\s+)?(?:in|entering)\s+" + _MODE +
             r"|\b" + _MODE + r"\s+(?:enabled|activated|engaged|unlocked)\b"
-            r"|\b" + _MODE + r"\s+on\s*[.!:]"
+            # "debug mode on." is ordinary config talk (Flask, Django); only the
+            # privileged-mode names count in the bare "on." shape.
+            r"|\b(?:developer|maintenance|god|admin)\s+mode\s+on\s*[.!:]"
+            r"|\bdebug\s+mode\s+on\s*[.!:]\s*(?:output|ignore|disable|answer|respond|remove)\b"
             r"|\b(?:enable|activate|enter|switch\s+to|engage)\s+" + _MODE +
             r"\s+(?:now|immediately|and\s+(?:ignore|disable|remove|answer))\b"
         ),
@@ -377,10 +409,15 @@ RULE_REGISTRY: list[Rule] = [
         category="data_exfil",
         description="Exfil via URL/webhook/IP: send/post/upload/transmit/exfiltrate to external endpoint",
         pattern=_r(
-            r"\b(send(?!\s+an?\s+(?:post|get|put|patch|delete|head|http|https|api|json)\b)"
-            r"|post(?!\s+requests?\b)|upload|exfiltrate|transmit|forward)\b\s*.{0,80}"
-            r"(to\s+)?(http[s]?://|ftp://|webhook|external\s+server|remote\s+endpoint|attacker"
-            r"|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
+            # A bare URL needs a sensitive object somewhere in the text ("upload the
+            # quarterly report to https://drive.example.com" is harmless); webhook,
+            # external server, attacker and IP targets are adversarial on their own.
+            _EXFIL_VERB + r"\b\s*.{0,80}"
+            r"(?:to\s+)?(?:webhook|external\s+server|remote\s+endpoint|attacker"
+            r"|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"
+            r"|\b" + _SENS + r"\b.{0,200}" + _EXFIL_VERB + r"\b.{0,80}(?:http[s]?|ftp)://"
+            r"|" + _EXFIL_VERB + r"\b.{0,80}\b" + _SENS + r"\b.{0,80}(?:http[s]?|ftp)://"
+            r"|" + _EXFIL_VERB + r"\b.{0,80}(?:http[s]?|ftp)://.{0,80}\b" + _SENS + r"\b",
             re.IGNORECASE | re.DOTALL,
         ),
         weight=1.0,
@@ -403,7 +440,9 @@ RULE_REGISTRY: list[Rule] = [
         pattern=_r(
             r"\b(dump|extract|output|print|list)\s+.{0,50}"
             r"(entire|all).{0,50}"
-            r"(conversation\s+history|memory|training\s+data|user\s+data|stored\s+data|context)\b",
+            # "all memory of a process" / "debugging context" are debugger talk, not a prompt dump
+            r"(conversation\s+history|memory(?!\s+of\s+(?:a|the|my|an)\s+\w+)|training\s+data|user\s+data|stored\s+data"
+            r"|(?<!debugging\s)(?<!debug\s)context)\b",
             re.IGNORECASE | re.DOTALL,
         ),
         weight=1.0,
@@ -418,7 +457,21 @@ RULE_REGISTRY: list[Rule] = [
         description="Shell command injection via tool/exec call",
         pattern=_r(
             r"(execute|run|call|invoke|eval)\s*(tool\s*)?\(?\s*[\"']?"
-            r"(bash|shell|cmd|powershell|exec|system|subprocess)(?=\s*[\(,:'\"]|\s+commands?\b)"
+            r"(bash|shell|cmd|powershell|exec|system|subprocess)(?=\s*[\(,:'\"]|\s+commands?\b(?!\s+(?:from|in|with|using|via|inside|within)\b))"
+        ),
+        weight=1.0,
+    ),
+    Rule(
+        rule_id="TC-007",
+        category="unsafe_tool_call",
+        description="Destructive shell command: rm -rf on root/home, mkfs, dd to a device, chmod 777 /",
+        pattern=_r(
+            r"\brm\s+(?:-{1,2}[a-z][\w-]*\s+)*-{1,2}(?:[a-z]*[rf][a-z]*|recursive|force)\s+(?:-{1,2}[\w-]+\s+)*"
+            r"(?:/\*?|~/?|\$HOME|\*)(?=\s|$|[.,;\"'])"
+            r"|\bmkfs(?:\.\w+)?\s+(?:-\w+\s+)*/dev/"
+            r"|\bdd\s+[^\n]{0,60}\bof=/dev/(?:sd|nvme|disk|hd|vd)"
+            r"|\bchmod\s+(?:-R\s+)?[0-7]?777\s+(?:-R\s+)?/(?=\s|$)"
+            r"|:\(\)\s*\{\s*:\|:&\s*\}\s*;\s*:"
         ),
         weight=1.0,
     ),
@@ -440,8 +493,10 @@ RULE_REGISTRY: list[Rule] = [
         pattern=_r(
             r"\b(?:read|get|fetch|retrieve|extract)\s+"
             r"(?:(?:all|any|every)\s+(?:of\s+)?(?:the\s+)?|the\s+|your\s+|their\s+|my\s+|user'?s\s+).{0,60}"
-            r"(api[-_\s]?key|secret[-_\s]?key|password|bearer\s+token|"
+            r"(api[-_\s]?key|secret[-_\s]?key|passwords?|bearer\s+token|"
             r"private[-_\s]?key|\.env\b|credentials?|credentials\.json)\b"
+            # "get my password reset" is account support, not a read of the secret itself
+            r"(?!\s+(?:reset|recovery|manager|policy|requirements?|field|strength|hint)\b)"
         ),
         weight=1.0,
     ),
@@ -757,6 +812,24 @@ RULE_REGISTRY: list[Rule] = [
         weight=1.0,
     ),
     Rule(
+        rule_id="DE-006",
+        category="data_exfil",
+        description="Secret/conversation sent to a bare domain, email address or defanged host",
+        # verb ... sensitive noun ... (to|at) target. Targets: email address, defanged
+        # host (hxxp, [.], (dot)), or a dotted domain with a path or common TLD.
+        pattern=_r(
+            _EXFIL_VERB[:-1] + r"|e-?mail|mail|dm|submit|leak|copy|paste)\b.{0,100}\b" + _SENS
+            + r"\b(?!\s+(?:reset|recovery|policy|requirements?)\b).{0,100}"
+            r"\b(?:to|at|via|into)\s+(?:the\s+(?:address|email|domain|site|url|host)\s+)?"
+            r"(?:[\w.+-]+@[\w-]+(?:\.[\w-]+)+"
+            r"|hxxps?://\S+"
+            r"|[a-z0-9-]+(?:(?:\[\.\]|\(\.\)|\[dot\]|\(dot\)|\.)[a-z0-9-]+)*(?:\[\.\]|\(\.\)|\[dot\]|\(dot\)|\.)"
+            r"(?:com|net|org|io|xyz|ru|cn|top|info|biz|co|me|dev|app|site|online|cc|tk|ml|ga|cf|gq|example|test|invalid)\b)",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        weight=1.0,
+    ),
+    Rule(
         rule_id="DE-005",
         category="data_exfil",
         description="Markdown image whose URL carries a data placeholder (render-time exfil)",
@@ -820,8 +893,17 @@ _HOMOGLYPH_PAIRS = (
     "\u0131i\u0237j"
 )
 _HOMOGLYPHS = {ord(_HOMOGLYPH_PAIRS[i]): _HOMOGLYPH_PAIRS[i + 1] for i in range(0, len(_HOMOGLYPH_PAIRS), 2)}
+# Broader fold: committed UTS #39 subset plus small capitals derived from Unicode names.
+_HOMOGLYPHS.update(_build_confusables())
+# Invisible "filler" code points that render as blank space but are not whitespace
+# (Hangul fillers, Braille blank, Khmer inherent vowels, Mongolian separator, invisible
+# operators). They separate words for a reader, so one view maps them to a space.
+_FILLERS = frozenset(map(ord, "\u115f\u1160\u3164\uffa0\u2800\u180e\u17b4\u17b5\u2061\u2062\u2063\u2064\u034f"))
+MAX_INPUT_CHARS = 100_000  # inputs longer than this are BLOCKed unscored (fail closed)
+_MAX_DECODED = 24          # decoded candidates scanned per prompt (bounds latency)
 _LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
 _DROP_CATEGORIES = {"Cf", "Mn", "Me", "Cc"}
+_FILLERS_CH = frozenset(chr(c) for c in _FILLERS)
 _WS = re.compile(r"\s+")
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _B64_RUN = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{16,}={0,2}")
@@ -830,13 +912,28 @@ _JOIN_LETTERS = re.compile(r"(?<![A-Za-z])(?:[A-Za-z][.\-_*]){3,}[A-Za-z](?![A-Z
 _MIXED_TOKEN = re.compile(r"\S+")
 
 
-def _normalize(text: str) -> str:
-    """NFKC, drop format/combining/control characters, fold look-alike letters, collapse whitespace."""
+def _normalize(text: str, sep: str = "") -> str:
+    """
+    NFKC, fold look-alike letters, collapse whitespace. Format, combining and control
+    characters are dropped (sep="") so "ig<ZWSP>nore" joins; with sep=" " format
+    characters and fillers become a space instead, so "ignore<U+3164>all" splits.
+    Every Unicode space (Zs/Zl/Zp) is whitespace in both modes.
+    """
     if text.isascii():
         return _WS.sub(" ", _CTRL.sub("", text)).strip()
     t = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", text))
-    t = "".join(c for c in t if c.isspace() or unicodedata.category(c) not in _DROP_CATEGORIES)
-    return _WS.sub(" ", t.translate(_HOMOGLYPHS)).strip()
+    out = []
+    for c in t:
+        cat = unicodedata.category(c)
+        if c.isspace() or cat in ("Zs", "Zl", "Zp"):
+            out.append(" ")
+        elif c in _FILLERS_CH or cat == "Cf":
+            out.append(sep)
+        elif cat in _DROP_CATEGORIES:
+            continue
+        else:
+            out.append(c)
+    return _WS.sub(" ", "".join(out).translate(_HOMOGLYPHS)).strip()
 
 
 def _leet(text: str) -> str:
@@ -864,6 +961,37 @@ def _printable_text(raw: bytes) -> str | None:
     return None
 
 
+_PRINTABLE_RUN = re.compile(r"[\x20-\x7e\n\t]{12,}")
+_B64_CHARS = re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}")
+_UNI_ESC = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|x([0-9A-Fa-f]{2}))")
+_HEX0X = re.compile(r"(?:0x[0-9A-Fa-f]{2}[\s,;]*){4,}")
+_DEFANG = (
+    (re.compile(r"h(?:xx|tt)p(s?)\s*(?:://|:\\\\)", re.I), r"http\1://"),
+    (re.compile(r"\s*(?:\[\.\]|\(\.\)|\{\.\}|\[dot\]|\(dot\)|\{dot\})\s*", re.I), "."),
+    (re.compile(r"\s*(?:\[@\]|\(@\)|\[at\]|\(at\))\s*", re.I), "@"),
+)
+
+
+def _printable_runs(raw: bytes) -> list[str]:
+    """Printable-ASCII runs inside decoded bytes: tolerates junk before or after a payload."""
+    return _PRINTABLE_RUN.findall(raw.decode("latin-1")) if raw else []
+
+
+def _b64_variants(joined: str) -> list[str]:
+    out: list[str] = []
+    for m in _B64_CHARS.finditer(joined):
+        run = m.group(0).replace("-", "+").replace("_", "/").rstrip("=")
+        for off in range(4):  # a glued prefix shifts the 4-char alignment
+            r = run[off:]
+            r = r[: len(r) - len(r) % 4] if len(r) % 4 == 1 else r
+            try:
+                dec = base64.b64decode(r + "=" * (-len(r) % 4))
+            except (binascii.Error, ValueError):
+                continue
+            out.extend(_printable_runs(dec))
+    return out
+
+
 def _decoded_candidates(norm: str, raw: str) -> list[str]:
     out: list[str] = []
     tags = "".join(chr(ord(c) - 0xE0000) for c in raw if 0xE0020 <= ord(c) <= 0xE007E)
@@ -871,26 +999,32 @@ def _decoded_candidates(norm: str, raw: str) -> list[str]:
         out.append(tags)
     if "%" in norm:
         out.append(urllib.parse.unquote(norm))
-    for m in _B64_RUN.finditer(norm):
-        run = m.group(0).replace("-", "+").replace("_", "/").rstrip("=")
-        try:
-            dec = base64.b64decode(run + "=" * (-len(run) % 4))
-        except (binascii.Error, ValueError):
-            continue
-        s = _printable_text(dec)
-        if s:
-            out.append(s)
+    if "&" in norm:
+        out.append(html.unescape(norm))
+    if "\\" in norm:
+        out.append(_UNI_ESC.sub(lambda m: chr(int(m.group(1) or m.group(2) or m.group(3), 16)), norm))
+    for m in _HEX0X.finditer(norm):
+        out.extend(_printable_runs(bytes.fromhex("".join(re.findall(r"0x([0-9A-Fa-f]{2})", m.group(0))))))
+    out.extend(_b64_variants(norm))
+    # Chunked or wrapped base64: whitespace inside the text is removed before scanning.
+    joined = re.sub(r"\s+", "", norm)
+    if joined != norm:
+        out.extend(_b64_variants(joined))
     for m in _HEX_RUN.finditer(norm):
         try:
             dec = bytes.fromhex(re.sub(r"[ :]", "", m.group(0)))
         except ValueError:
             continue
-        s = _printable_text(dec)
-        if s:
-            out.append(s)
+        out.extend(_printable_runs(dec))
     out.append(codecs.encode(norm, "rot13"))
     out.append(norm[::-1])
     return out
+
+
+def _refang(text: str) -> str:
+    for pat, repl in _DEFANG:
+        text = pat.sub(repl, text)
+    return text
 
 
 def _views(prompt: str) -> list[str]:
@@ -907,13 +1041,35 @@ def _views(prompt: str) -> list[str]:
     add(prompt)
     norm = _normalize(prompt)
     bases = [norm, _JOIN_LETTERS.sub(lambda m: re.sub(r"[.\-_*]", "", m.group(0)), norm)]
+    spaced = _normalize(prompt, " ")
+    if spaced != norm:
+        bases.append(spaced)
+    refanged = _refang(norm)
+    if refanged != norm:
+        bases.append(refanged)
+    seen: set[str] = set()
     for cand in _decoded_candidates(norm, prompt):
-        bases.append(_normalize(cand))
+        if len(seen) >= _MAX_DECODED:
+            break
+        n = _normalize(cand)
+        if n and n not in seen and n != norm:
+            seen.add(n)
+            bases.append(n)
     bases.extend(_punct(b) for b in list(bases))
     for b in bases:
         add(b)
         add(_leet(b))
     return views
+
+
+def _fail_closed(reason: str) -> GateResult:
+    return GateResult(
+        verdict=Verdict.BLOCK,
+        score=BLOCK_THRESHOLD,
+        threshold=BLOCK_THRESHOLD,
+        matches=[],
+        primary_reason=reason,
+    )
 
 
 def evaluate(prompt: str) -> GateResult:
@@ -926,6 +1082,10 @@ def evaluate(prompt: str) -> GateResult:
     Score is the sum of weights of all matched rules.
     Verdict is BLOCK if score >= BLOCK_THRESHOLD, else ALLOW.
     """
+    if not isinstance(prompt, str):
+        return _fail_closed(f"[TYPE] non-string input ({type(prompt).__name__}) is blocked, not coerced")
+    if len(prompt) > MAX_INPUT_CHARS:
+        return _fail_closed(f"[SIZE] oversize input ({len(prompt)} > {MAX_INPUT_CHARS} chars) is blocked unscored")
     matches: list[RuleMatch] = []
     total_score = 0.0
     views = _views(prompt)

@@ -494,15 +494,15 @@ class TestCorpusIntegrity:
         return records
 
     def test_corpus_has_expected_size(self, corpus):
-        assert len(corpus) == 265, f"Expected 265 records, got {len(corpus)}"
+        assert len(corpus) == 284, f"Expected 284 records, got {len(corpus)}"
 
     def test_corpus_adversarial_count(self, corpus):
         adv = [r for r in corpus if r["label"] == "adversarial"]
-        assert len(adv) == 166
+        assert len(adv) == 177
 
     def test_corpus_benign_count(self, corpus):
         ben = [r for r in corpus if r["label"] == "benign"]
-        assert len(ben) == 99
+        assert len(ben) == 107
 
     def test_corpus_no_duplicate_ids(self, corpus):
         ids = [r["id"] for r in corpus]

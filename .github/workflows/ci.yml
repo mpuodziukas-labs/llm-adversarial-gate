@@ -28,6 +28,10 @@ jobs:
       - name: Build corpus
         run: python3 build_corpus.py
 
+      - name: Committed corpus must equal a fresh build
+        # CI scores the committed corpus; a stale or hand-edited file fails here.
+        run: git diff --exit-code corpus/
+
       - name: Run pytest
         run: python3 -m pytest tests/ -v --tb=short
 
