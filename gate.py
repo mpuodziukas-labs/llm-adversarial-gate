@@ -10,7 +10,7 @@ Detection coverage:
 
 Architecture:
   Each threat class has a list of Rule objects (pattern + weight).
-  A prompt is scored: if total weight >= BLOCK_THRESHOLD → BLOCK.
+  A prompt is scored: if total weight >= BLOCK_THRESHOLD -> BLOCK.
   Rules are composable; scores are additive for co-occurrence patterns.
   Designed to be extended: add rules to RULE_REGISTRY without changing
   the evaluation loop.

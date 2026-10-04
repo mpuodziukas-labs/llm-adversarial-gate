@@ -14,7 +14,7 @@ records marked known_gap are reported but do not fail the run.
 Definitions:
     True Positive  (TP): adversarial prompt correctly BLOCKED
     True Negative  (TN): benign prompt correctly ALLOWED
-    False Negative (FN): adversarial prompt incorrectly ALLOWED  ← most dangerous
+    False Negative (FN): adversarial prompt incorrectly ALLOWED  <- most dangerous
     False Positive (FP): benign prompt incorrectly BLOCKED
 
 Deterministic: no randomness, no external calls. Results are reproducible.
@@ -122,8 +122,8 @@ def print_confusion_matrix(counts: dict[str, int]):
     print()
     print("Confusion Matrix:")
     print("                   Predicted BLOCK   Predicted ALLOW")
-    print(f"  Actual Adversarial    TP={tp:<6}        FN={fn:<6}   (↑ FN = miss)")
-    print(f"  Actual Benign         FP={fp:<6}        TN={tn:<6}   (↑ FP = false alarm)")
+    print(f"  Actual Adversarial    TP={tp:<6}        FN={fn:<6}   (\u2191 FN = miss)")
+    print(f"  Actual Benign         FP={fp:<6}        TN={tn:<6}   (\u2191 FP = false alarm)")
     print()
 
 
