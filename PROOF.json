@@ -1,0 +1,11 @@
+{
+  "expected_exit": 0,
+  "expected_line": "RESULT: PASS - no unexpected false negatives or false positives (10 documented known gaps)",
+  "limitations": "Synthetic corpus of n=284 prompts, co-developed with the rules, so the figures are not real-world recall. 171/177 attacks are blocked and 6/177 attacks are missed. 4/107 benign prompts are over-blocked. Mention versus use of an attack phrase cannot be told apart. Evasions outside the listed input views, such as split words, other languages and unlisted encodings, still pass.",
+  "outcome": "a prompt-injection gate that blocks known attack patterns, with its misses and over-blocks measured and published",
+  "repo": "llm-adversarial-gate",
+  "schema": "proof-pack/1",
+  "scope": "synthetic data, fixed seed, offline",
+  "site": "https://puodziukas.dev/proof.json",
+  "verify_cmd": "python3 evaluate.py"
+}

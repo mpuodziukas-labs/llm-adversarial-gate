@@ -327,3 +327,5 @@ the result is 171/177 and 4/107.
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+Agent verification contract: [AGENTS.md](AGENTS.md)
