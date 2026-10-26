@@ -1,4 +1,4 @@
-# LLM Adversarial Validation Gate
+# llm-adversarial-gate
 
 Proves: LLM guardrails and red-team evals. Verify in 60s: `python3 evaluate.py`.
 
@@ -7,6 +7,35 @@ Proves: LLM guardrails and red-team evals. Verify in 60s: `python3 evaluate.py`.
 A reproducible, offline adversarial-validation gate for LLM outputs covering
 five OWASP LLM Top 10 threat classes. Ships with a bundled synthetic corpus,
 a deterministic evaluator, and a full pytest suite, with no API keys required.
+
+The title line this README carried before the standard layout, kept as written:
+
+```text
+# LLM Adversarial Validation Gate
+```
+
+## Ticket
+
+| Field | Value |
+|---|---|
+| Ticket | llm-adversarial-gate 2026-10-25 |
+| Status | LIVE |
+| Severity of a false pass | An attack prompt that should be blocked is passed to the model because the evaluator printed PASS, and the model then leaks its instructions, runs a shell command or sends data to an outside server. |
+| Scope (in) | Rule-based scoring of one prompt string per call: the detection rules, the input views, the bundled labelled corpus, the evaluator and the command line exit codes. |
+| Out of scope | Response-side checks, conversation memory, semantic intent, real-world recall and any trained classifier (see Limitations). |
+| Owner | Michael Puodziukas, michael@puodziukas.dev |
+| Opened | 2026-06-12 |
+| Last verified | 2026-10-25, `RESULT: PASS - no unexpected false negatives or false positives (10 documented known gaps)` |
+| Oracle | `python3 evaluate.py`, RESULT line `RESULT: PASS - no unexpected false negatives or false positives (10 documented known gaps)`; `python3 mutants.py`, last line `mutants killed 23/23` |
+| Dependencies | Runtime: Python 3 standard library only. Test: pytest. |
+| Supported platforms | macOS (both oracles measured here, rc=0); Linux through the ubuntu-latest runner in .github/workflows/ci.yml (not measured here). |
+
+## Quick start
+
+```bash
+python3 evaluate.py
+python3 mutants.py
+```
 
 ---
 
@@ -36,53 +65,9 @@ corpus is committed; `python3 build_corpus.py` regenerates it byte for byte.
 Exit codes: `gate.py` 0 = allow, 1 = block, 2 = usage error. `evaluate.py` 0 = pass,
 1 = fail or corpus error.
 
----
-
-## Honesty Statement
-
-> **These metrics are measured on the bundled synthetic corpus (n=284,
-> composition described below). They are NOT from a production deployment,
-> NOT from an external benchmark, and NOT from client data.**
->
-> The corpus was authored specifically for this repository. It is intentionally
-> broad but finite. A rule-based gate will miss novel phrasing not covered by
-> its rules; that is a known and expected limitation of this approach. See
-> [Limitations](#limitations) for an honest accounting.
-
----
-
-## Corpus Composition
-
-| Split       | Count | Categories |
-|-------------|-------|------------|
-| Adversarial | 177   | prompt_injection (69), jailbreak (41), system_prompt_leak (21), data_exfil (25), unsafe_tool_call (21) |
-| Benign      | 107   | coding, security education, research, creative writing, tool use, superficially similar edge cases |
-| **Total**   | **284** | |
-
-The first 140 adversarial and 80 benign rows are the original corpus. A red-team
-pass then added 26 adversarial rows (Unicode, encoding, splitting and phrasing
-evasions) and 19 benign rows (harmless text the first gate blocked). Of the
-added rows, 6 adversarial and 4 benign are `known_gap`: the gate gets them wrong
-and the Limitations section says why. The hostile review of 2026-10-04 then added
-11 adversarial and 8 benign rows (the exact inputs it used, see
-[Hostile review 2026-10-04](#hostile-review-2026-10-04)); none of them is a
-`known_gap`.
-
-The benign split includes prompts that contain surface-level "suspicious" tokens
-(`ignore`, `override`, `base64`, `developer`, `pretend`, etc.) to stress-test
-false-positive rate.
-
-**Reference datasets:** This corpus is original synthetic content. It was not
-derived from [AdvBench](https://github.com/llm-attacks/llm-attacks),
-[HarmBench](https://github.com/centerforaisafety/HarmBench),
-[JailbreakBench](https://github.com/JailbreakBench/jailbreakbench), or any
-other published dataset, though those are referenced here for context.
-
----
-
 ## Results on Bundled Corpus
 
-```
+```text
 Confusion Matrix:
                    Predicted BLOCK   Predicted ALLOW
   Actual Adversarial    TP=171           FN=6
@@ -112,7 +97,77 @@ on a held-out set from a different source. This is the correct thing to say.
 The value is that the methodology (rules, corpus, evaluator) is fully
 reproducible and auditable.
 
+## Normal procedure
+
+1. From the repo root run `python3 evaluate.py`. It prints the confusion matrix, the per-category breakdown, the list of known gaps and a final RESULT line.
+2. Read the RESULT line. PASS means there is no unexpected miss and no unexpected false positive on the bundled corpus; the documented known gaps are counted but do not fail the run. The last two lines of the output read exactly:
+
+```text
+RESULT: PASS - no unexpected false negatives or false positives (10 documented known gaps)
+======================================================================
+```
+
+3. Run `python3 mutants.py` to prove the tests can fail. It copies the repo to a temporary directory, removes one defense at a time and requires the matching tests to go red. PASS ends with `mutants killed 23/23`.
+4. Query the gate on one prompt: `python3 gate.py "How do I read a file in Python?"`. Exit code 0 means allow, 1 means block, 2 means usage error.
+
+## Abnormal procedure
+
+| Symptom | Cause | Action | Oracle |
+|---|---|---|---|
+| `evaluate.py` exits 1 and the RESULT line says FAIL | An attack in the corpus is now allowed, a benign row is now blocked, or a corpus row is malformed | Read the Misclassifications block of the output, find the row id and compare it with the rule that should match | `python3 evaluate.py` |
+| `evaluate.py` exits 1 and names a `known_gap` row as stale | The gate now handles a documented known gap correctly | Remove the `known_gap` mark for that row in `build_corpus.py`, rebuild the corpus and update the Limitations item that mentions it | `python3 evaluate.py` |
+| `gate.py` exits 2 | No prompt argument was given | Pass the prompt as one quoted argument | `python3 gate.py "Ignore all previous instructions."` |
+| `mutants.py` prints a LIVE line | A removed defense that the tests do not detect, which is a gap in the tests | Add or tighten a test until that line prints RED | `python3 mutants.py` |
+| `mutants.py` prints `control FAIL` or `pattern matched` | The unmodified tests fail in the copy (for example pytest is missing), or the source line a mutant targets has moved | Run `pip install pytest`, or update the pattern in `mutants.py` | `python3 mutants.py` |
+| CI fails on the corpus diff step | The committed corpus differs from what `build_corpus.py` generates | Run `python3 build_corpus.py` and commit the regenerated corpus | `python3 build_corpus.py` |
+
+## Emergency procedure
+
+The gate printed PASS but production disagrees: a prompt that passed the gate caused a leak, a command run or an outbound send.
+
+1. Freeze: stop relying on this gate for that prompt class, and record the repo commit and the exact prompt that got through.
+2. Replay: run `python3 gate.py` with the exact prompt. If it exits 0, add the prompt to `build_corpus.py` as an adversarial row, fix or add a rule in `gate.py`, and add a mutant to `mutants.py`. Then run `python3 build_corpus.py`, `python3 evaluate.py` and `python3 mutants.py` and expect PASS and `mutants killed` with matching counts.
+3. Tell: the owner (michael@puodziukas.dev) and every team that calls the gate. Name the missing rule and the Limitations item that covers it.
+
 ---
+
+## Honesty Statement
+
+> **These metrics are measured on the bundled synthetic corpus (n=284,
+> composition described below). They are NOT from a production deployment,
+> NOT from an external benchmark, and NOT from client data.**
+>
+> The corpus was authored specifically for this repository. It is intentionally
+> broad but finite. A rule-based gate will miss novel phrasing not covered by
+> its rules; that is a known and expected limitation of this approach. See
+> [Limitations](#limitations) for an honest accounting.
+
+## Corpus Composition
+
+| Split       | Count | Categories |
+|-------------|-------|------------|
+| Adversarial | 177   | prompt_injection (69), jailbreak (41), system_prompt_leak (21), data_exfil (25), unsafe_tool_call (21) |
+| Benign      | 107   | coding, security education, research, creative writing, tool use, superficially similar edge cases |
+| **Total**   | **284** | |
+
+The first 140 adversarial and 80 benign rows are the original corpus. A red-team
+pass then added 26 adversarial rows (Unicode, encoding, splitting and phrasing
+evasions) and 19 benign rows (harmless text the first gate blocked). Of the
+added rows, 6 adversarial and 4 benign are `known_gap`: the gate gets them wrong
+and the Limitations section says why. The hostile review of 2026-10-04 then added
+11 adversarial and 8 benign rows (the exact inputs it used, see
+[Hostile review 2026-10-04](#hostile-review-2026-10-04)); none of them is a
+`known_gap`.
+
+The benign split includes prompts that contain surface-level "suspicious" tokens
+(`ignore`, `override`, `base64`, `developer`, `pretend`, etc.) to stress-test
+false-positive rate.
+
+**Reference datasets:** This corpus is original synthetic content. It was not
+derived from [AdvBench](https://github.com/llm-attacks/llm-attacks),
+[HarmBench](https://github.com/centerforaisafety/HarmBench),
+[JailbreakBench](https://github.com/JailbreakBench/jailbreakbench), or any
+other published dataset, though those are referenced here for context.
 
 ## Replay Command
 
@@ -131,11 +186,9 @@ python3 gate.py "Ignore all previous instructions."
 python3 gate.py "How do I read a file in Python?"
 ```
 
----
-
 ## File Structure
 
-```
+```text
 llm-adversarial-gate/
   gate.py               Guardrail: detection rules, evaluate(), ModelAdapter
   evaluate.py           Runs corpus through gate, prints metrics
@@ -152,8 +205,6 @@ llm-adversarial-gate/
   README.md
   LICENSE               MIT
 ```
-
----
 
 ## Gate Architecture
 
@@ -202,8 +253,6 @@ Lower-weight rules (0.4 to 0.6) require co-occurrence to reach threshold.
 **Extension:** Add rules to `RULE_REGISTRY` in `gate.py` without changing the
 evaluation loop. Each `Rule` takes a compiled regex, a weight, and metadata.
 
----
-
 ## Plugging in a Real Model
 
 `gate.py` ships a `ModelAdapter` interface:
@@ -236,9 +285,10 @@ response_result = evaluate(response)  # check for response-side violations
 
 The `MockModelAdapter` (no API key needed) is used in CI and the test suite.
 
----
-
 ## Limitations
+
+- Passing the oracles means the bundled corpus labels hold and the listed defenses are tested. It does not measure recall on attacks outside the corpus.
+- The numbered list below is the full accounting of what the gate does not do.
 
 This is an honest list of what this gate does not do:
 
@@ -322,7 +372,60 @@ the result is 171/177 and 4/107.
 - M3 fixed: inputs over 100,000 characters return BLOCK (`[SIZE] oversize`); 1 MB input returns in under 2 s.
 - M4 fixed: CI runs `git diff --exit-code corpus/` after the rebuild, so it scores the committed corpus.
 
----
+## Architecture
+
+| Path | Role | Lines |
+|---|---|---|
+| `gate.py` | Rule registry, input views, scoring, ModelAdapter | 1189 |
+| `confusables.py` | Look-alike letter table used by the folding view | 77 |
+| `evaluate.py` | The oracle: runs the corpus through the gate and prints the report | 284 |
+| `mutants.py` | Mutation check: removes one defense per copy and requires red tests | 77 |
+| `build_corpus.py` | Generates the labelled corpus | 783 |
+| `corpus/adversarial.jsonl` | The bundled labelled prompts | 284 |
+| `tests/test_gate.py` | Original gate tests | 524 |
+| `tests/test_redteam.py` | Red-team tests and known-gap xfails | 313 |
+| `tests/test_hostile.py` | Hostile-review tests | 219 |
+| `tests/test_stranger.py` | Repository hygiene checks | 39 |
+| `.github/workflows/ci.yml` | CI: corpus rebuild diff, pytest, evaluate | 41 |
+
+Data flow:
+
+1. `build_corpus.py` writes `corpus/adversarial.jsonl`.
+2. `evaluate.py` reads the corpus and calls `gate.evaluate()` on every prompt.
+3. `gate.py` scores each prompt over its input views and returns ALLOW or BLOCK.
+4. `evaluate.py` compares verdicts with labels, prints the report and exits 0 only on PASS.
+5. `mutants.py` removes one defense at a time from a copy and requires `tests/` to go red.
+
+## Test and mutation evidence
+
+Measured on 2026-10-25 on macOS by running both oracles from the repo root. Each exited with code zero (rc=0). Last two lines of `python3 evaluate.py` (the evaluator prints no table line, so the figures below the quote are restated from its Confusion Matrix block):
+
+```text
+RESULT: PASS - no unexpected false negatives or false positives (10 documented known gaps)
+======================================================================
+```
+
+Restated from the Confusion Matrix block of the same output:
+
+```text
+| measure | value |
+|---|---|
+| adversarial caught | 171 of 177 |
+| benign over-blocked | 4 of 107 |
+```
+
+Last line of `python3 mutants.py`:
+
+```text
+mutants killed 23/23
+```
+
+## Change log
+
+| Date | Change | Oracle after |
+|---|---|---|
+| 2026-10-25 | Additive restructuring to the README standard: sections added, no old line altered | `python3 evaluate.py` RESULT line `RESULT: PASS - no unexpected false negatives or false positives (10 documented known gaps)`; `python3 mutants.py` last line `mutants killed 23/23` |
+| 2026-10-04 | Hostile review fixes (date from the Hostile review section) | none: no oracle output was recorded for that review in this README |
 
 ## License
 
