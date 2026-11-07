@@ -51,9 +51,13 @@ run_checks() {
   SERVER_PID=""
   [ "$rc" -eq 0 ] || { echo "FAIL: API tests"; return 1; }
 
-  unit="$(sed -n 's/^ *Tests  *\([0-9][0-9]*\) passed.*/\1/p' "$log.unit" | head -n 1)"
-  api="$(sed -n 's/^ *\([0-9][0-9]*\) passed.*/\1/p' "$log.api" | tail -n 1)"
-  parity="$(grep -h '^PARITY ' "$log.unit" | sed 's/^PARITY //' | paste -sd ';' - | sed 's/;/; /g')"
+  # CI runners color test output; strip ANSI codes before reading counts
+  local esc=$'\033'
+  sed "s/${esc}\[[0-9;]*m//g" "$log.unit" >"$log.unit.plain"
+  sed "s/${esc}\[[0-9;]*m//g" "$log.api" >"$log.api.plain"
+  unit="$(sed -n 's/^ *Tests  *\([0-9][0-9]*\) passed.*/\1/p' "$log.unit.plain" | head -n 1)"
+  api="$(sed -n 's/^ *\([0-9][0-9]*\) passed.*/\1/p' "$log.api.plain" | tail -n 1)"
+  parity="$(grep -h '^PARITY ' "$log.unit.plain" | sed 's/^PARITY //' | paste -sd ';' - | sed 's/;/; /g')"
   if [ -z "$unit" ] || [ -z "$api" ] || [ -z "$parity" ]; then
     echo "FAIL: could not read test counts (unit='$unit' api='$api' parity='$parity')"
     return 1
