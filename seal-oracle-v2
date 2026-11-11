@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""seal-oracle-v2: GREEN only if all three hold.
+  (a) the seal commit is a strict ancestor of the score commit
+  (b) the heldout-v2 file hashes at the score commit equal the hashes recorded at the seal
+  (c) every detector file sha at the score commit equals the sha recorded in PREREG.md at the seal
+An empty set (no hashed files, no detector lines) is RED, never a vacuous pass.
+Usage: seal-oracle-v2 --seal SHA [--score SHA] [--repo DIR] [--base REL] | --selftest
+  --base is the directory (repo-relative) that holds HELDOUT-V2.sha256 and PREREG.md.
+PREREG.md detector lines: DETECTOR-SHA256 <hex>  <repo-relative path>
+"""
+import argparse, hashlib, os, re, subprocess, sys, tempfile
+
+HASHFILE = "HELDOUT-V2.sha256"
+PREREG = "PREREG.md"
+
+
+def git(repo, *a):
+    return subprocess.run(["git", "-C", repo, *a], capture_output=True)
+
+
+def show(repo, rev, path):
+    r = git(repo, "show", "%s:%s" % (rev, path))
+    return r.stdout if r.returncode == 0 else None
+
+
+def sha(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def join(base, p):
+    return p if base in ("", ".") else base.rstrip("/") + "/" + p
+
+
+def check(repo, seal, score, base="."):
+    """Returns (reds, notes). reds is a list of 'tag: message'; GREEN iff empty."""
+    reds, notes = [], []
+    rs = git(repo, "rev-parse", "--verify", seal + "^{commit}")
+    rc = git(repo, "rev-parse", "--verify", score + "^{commit}")
+    if rs.returncode or rc.returncode:
+        return ["a: seal or score is not a commit"], notes
+    S, C = rs.stdout.decode().strip(), rc.stdout.decode().strip()
+
+    # (a) strict ancestry
+    if S == C:
+        reds.append("a: seal and score are the same commit")
+    elif git(repo, "merge-base", "--is-ancestor", S, C).returncode != 0:
+        reds.append("a: seal is not an ancestor of score")
+    else:
+        notes.append("a ok: seal %s strictly precedes score %s" % (S[:9], C[:9]))
+
+    # sealed hash list and PREREG, always read at the SEAL commit
+    hf = show(repo, S, join(base, HASHFILE))
+    pr = show(repo, S, join(base, PREREG))
+    entries = []
+    if hf is not None:
+        for ln in hf.decode().splitlines():
+            m = re.match(r"^([0-9a-f]{64})  (\S+)$", ln)
+            if m:
+                entries.append((m.group(1), m.group(2)))
+    dets = []
+    if pr is not None:
+        for ln in pr.decode().splitlines():
+            m = re.match(r"^DETECTOR-SHA256 ([0-9a-f]{64})  (\S+)$", ln)
+            if m:
+                dets.append((m.group(1), m.group(2)))
+    if not entries:
+        reds.append("empty: no heldout hashes recorded at the seal")
+    if not dets:
+        reds.append("empty: no detector sha recorded in PREREG at the seal")
+
+    # (b) heldout unchanged since the seal
+    bad_b = 0
+    for h, p in entries:
+        at_seal = show(repo, S, join(base, p))
+        at_score = show(repo, C, join(base, p))
+        if at_seal is None or sha(at_seal) != h:
+            reds.append("b: %s does not match its hash at the seal" % p); bad_b += 1
+        elif at_score is None or sha(at_score) != h:
+            reds.append("b: %s changed or missing at score" % p); bad_b += 1
+    if show(repo, C, join(base, HASHFILE)) != hf:
+        reds.append("b: %s changed since the seal" % HASHFILE); bad_b += 1
+    if entries and not bad_b:
+        notes.append("b ok: %d heldout files unchanged" % len(entries))
+
+    # (c) detector sha at score equals PREREG
+    bad_c = 0
+    for h, p in dets:
+        at_score = show(repo, C, p)
+        if at_score is None or sha(at_score) != h:
+            reds.append("c: detector %s at score differs from PREREG" % p); bad_c += 1
+    if show(repo, C, join(base, PREREG)) != pr:
+        reds.append("c: %s changed since the seal" % PREREG); bad_c += 1
+    if dets and not bad_c:
+        notes.append("c ok: %d detector files match PREREG" % len(dets))
+    return reds, notes
+
+
+def tags(reds):
+    return sorted({r.split(":")[0] for r in reds})
+
+
+def mk(tmp, name, *, empty_hash=False, empty_det=False):
+    """Temp repo: base commit (detector), seal commit (heldout+hashes+PREREG), returns (repo, base, seal)."""
+    repo = os.path.join(tmp, name)
+    os.makedirs(os.path.join(repo, "heldout-v2"))
+    run = lambda *a: subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True)
+    run("init", "-q"); run("config", "user.email", "t@t.t"); run("config", "user.name", "t")
+    w = lambda p, s: open(os.path.join(repo, p), "w").write(s)
+    w("det.txt", "detector v1\n"); run("add", "."); run("commit", "-qm", "base")
+    base = run("rev-parse", "HEAD").stdout.decode().strip()
+    w("heldout-v2/a.jsonl", '{"id":1}\n'); w("heldout-v2/b.jsonl", '{"id":2}\n')
+    hs = "" if empty_hash else "".join("%s  heldout-v2/%s\n" % (sha(open(os.path.join(repo, "heldout-v2", f), "rb").read()), f) for f in ("a.jsonl", "b.jsonl"))
+    w("HELDOUT-V2.sha256", hs)
+    ds = "" if empty_det else "DETECTOR-SHA256 %s  det.txt\n" % sha(b"detector v1\n")
+    w("PREREG.md", "prereg\n" + ds)
+    run("add", "."); run("commit", "-qm", "seal")
+    return repo, base, run("rev-parse", "HEAD").stdout.decode().strip()
+
+
+def score_commit(repo, edit=None):
+    run = lambda *a: subprocess.run(["git", "-C", repo, *a], check=True, capture_output=True)
+    if edit:
+        edit(repo)
+    open(os.path.join(repo, "score.json"), "w").write("{}\n")
+    run("add", "."); run("commit", "-qm", "score")
+    return run("rev-parse", "HEAD").stdout.decode().strip()
+
+
+def selftest():
+    results = []
+
+    def expect(name, got, want):
+        ok = got == want
+        results.append(ok)
+        print("%s %s got=%s want=%s" % ("PASS" if ok else "FAIL", name, got, want))
+
+    def app(path, s):
+        return lambda r: open(os.path.join(r, path), "a").write(s)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, base, seal = mk(tmp, "green")
+        sc = score_commit(repo)
+        reds, _ = check(repo, seal, sc); expect("green baseline", reds, [])
+        r = subprocess.run([sys.executable, os.path.abspath(__file__), "--repo", repo, "--seal", seal, "--score", sc], capture_output=True)
+        expect("cli green exit", r.returncode, 0)
+
+        repo, base, seal = mk(tmp, "a_same")
+        reds, _ = check(repo, seal, seal); expect("RED a: score == seal", tags(reds), ["a"])
+        r = subprocess.run([sys.executable, os.path.abspath(__file__), "--repo", repo, "--seal", seal, "--score", seal], capture_output=True)
+        expect("cli red exit", r.returncode, 1)
+
+        repo, base, seal = mk(tmp, "a_order")
+        score_commit(repo)
+        reds, _ = check(repo, seal, base); expect("RED a: seal after score", "a" in tags(reds), True)
+
+        repo, base, seal = mk(tmp, "a_bad")
+        reds, _ = check(repo, "deadbeef", seal); expect("RED a: seal not a commit", tags(reds), ["a"])
+
+        repo, base, seal = mk(tmp, "b")
+        sc = score_commit(repo, app("heldout-v2/a.jsonl", '{"id":99}\n'))
+        reds, _ = check(repo, seal, sc); expect("RED b: heldout edited after seal", tags(reds), ["b"])
+
+        repo, base, seal = mk(tmp, "c")
+        sc = score_commit(repo, app("det.txt", "tuned\n"))
+        reds, _ = check(repo, seal, sc); expect("RED c: detector changed after seal", tags(reds), ["c"])
+
+        repo, base, seal = mk(tmp, "e1", empty_hash=True)
+        sc = score_commit(repo); reds, _ = check(repo, seal, sc)
+        expect("RED empty: no heldout hashes", "empty" in tags(reds), True)
+
+        repo, base, seal = mk(tmp, "e2", empty_det=True)
+        sc = score_commit(repo); reds, _ = check(repo, seal, sc)
+        expect("RED empty: no detector line", "empty" in tags(reds), True)
+    n = len(results)
+    print("SEAL-ORACLE-V2 SELFTEST %d/%d" % (sum(results), n))
+    return 0 if n and all(results) else 1
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--repo", default=".")
+    ap.add_argument("--seal")
+    ap.add_argument("--score", default="HEAD")
+    ap.add_argument("--base", default=".")
+    a = ap.parse_args()
+    if a.selftest:
+        sys.exit(selftest())
+    if not a.seal:
+        print("usage: --seal SHA required"); sys.exit(2)
+    reds, notes = check(a.repo, a.seal, a.score, a.base)
+    for n in notes:
+        print(n)
+    for r in reds:
+        print("VIOLATION " + r)
+    if reds:
+        print("SEAL ORACLE V2: RED"); sys.exit(1)
+    print("SEAL ORACLE V2: GREEN 3/3"); sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
