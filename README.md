@@ -2,6 +2,8 @@
 
 Proves: LLM guardrails and red-team evals. Verify in 60s: `python3 evaluate.py`.
 
+Where this fits: OWASP LLM Top 10 2025 LLM01 Prompt Injection and LLM02 Sensitive Information Disclosure (the class table further down uses v1.1 numbering); NIST AI RMF function MEASURE. Sources in SOURCES.md.
+
 ![CI](https://github.com/mpuodziukas-labs/llm-adversarial-gate/actions/workflows/ci.yml/badge.svg)
 
 A reproducible, offline adversarial-validation gate for LLM outputs covering
@@ -92,10 +94,25 @@ All 10 misses and false positives are `known_gap` rows (6 missed attacks, 4 fals
 positives); `evaluate.py` lists them on every run.
 
 **Why these numbers are honest:** The rules were iteratively developed *against
-this corpus*. The corpus and rules were co-developed, and the gate was not tested
-on a held-out set from a different source. This is the correct thing to say.
-The value is that the methodology (rules, corpus, evaluator) is fully
-reproducible and auditable.
+this corpus*, so the figures above are in-distribution. They are paired with a
+blind test on purpose.
+
+**Blind held-out test (v2), pre-registered:** 75 attacks and 48 benign rows
+written from the public taxonomy only (`PREREG.md`), hashed and committed in
+`e1a736a` before the first scoring run, then scored once with the detector
+byte-identical to its pre-registered sha256:
+
+```text
+HELDOUT-V2 caught 24/75, over-blocked 3/48
+caught 95% Wilson [0.2254, 0.4321]; over-blocked 95% Wilson [0.0215, 0.1684]
+```
+
+The gap between the in-corpus and blind numbers is the measured limit of a
+pattern detector on phrasing it has never seen. It is why this gate sits in
+front of a model-based check, never in place of one. The set stays sealed:
+`seal-oracle-v2` goes RED if the held-out rows or the detector change after the
+seal, so the blind number cannot be tuned upward. Full output, with every
+missed id, is in `HELDOUT-V2-SCORE.txt`.
 
 ## Normal procedure
 
