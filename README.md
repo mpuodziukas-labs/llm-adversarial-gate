@@ -148,6 +148,23 @@ The gate printed PASS but production disagrees: a prompt that passed the gate ca
 
 ---
 
+## Verify
+
+```bash
+bash scripts/verify.sh
+bash scripts/verify.sh --selftest
+```
+
+The first command runs `evaluate.py` and checks that the published counts
+(171/177 caught, 4/107 over-blocked, 6/177 missed, n=284) appear in its output.
+The second plants a defect in a temporary copy of the repository, expects the
+check to fail, then expects the clean copy to pass.
+
+The attack categories are mapped to MITRE ATLAS technique ids in
+[ATLAS.md](ATLAS.md). Mapping, not certification.
+
+---
+
 ## Honesty Statement
 
 > **These metrics are measured on the bundled synthetic corpus (n=284,
@@ -218,7 +235,9 @@ llm-adversarial-gate/
   tests/test_hostile.py 53 hostile-review tests (exact inputs from the review)
   tests/test_stranger.py 4 repository hygiene checks
   RED-RUN-REVIEW.txt      Findings table of the 2026-10-04 hostile review, verbatim
-  .github/workflows/ci.yml   GitHub Actions: pytest + evaluate
+  .github/workflows/ci.yml   GitHub Actions: pytest + evaluate, and the ts job
+  ts/                   TypeScript port, REST API, Vitest and Playwright API tests
+  scripts/verify-ts.sh  Runs the whole TypeScript check; --selftest plants defects
   README.md
   LICENSE               MIT
 ```
@@ -443,6 +462,64 @@ mutants killed 23/23
 |---|---|---|
 | 2026-10-25 | Additive restructuring to the README standard: sections added, no old line altered | `python3 evaluate.py` RESULT line `RESULT: PASS - no unexpected false negatives or false positives (10 documented known gaps)`; `python3 mutants.py` last line `mutants killed 23/23` |
 | 2026-10-04 | Hostile review fixes (date from the Hostile review section) | none: no oracle output was recorded for that review in this README |
+
+## TypeScript port
+
+`ts/` is a second implementation of the same gate in strict TypeScript (Node 24+), a
+small REST API over it, and API tests. The Python gate is untouched and stays the
+reference.
+
+What it demonstrates: TypeScript with `strict`, `noUncheckedIndexedAccess` and no
+`any`; a framework-free HTTP service on `node:http`; Vitest unit tests; Playwright API
+tests using only the `request` fixture; and parity testing against a reference
+implementation.
+
+```
+POST /v1/check   {"text": "..."}  ->  200 {"decision": "BLOCK" | "ALLOW", "category": "prompt_injection" | ... | null}
+GET  /healthz                     ->  200 {"status": "ok"}
+```
+
+Errors are fixed codes with no internals: 400 `invalid_json` or `text_required`, 413
+`payload_too_large` (body over 256 KiB), 405 `method_not_allowed` (with `Allow`), 404
+`not_found`. Text over 100000 code points is a 200 with `BLOCK` and category
+`input_limit`, the same fail-closed rule as Python.
+
+Run it (needs Node 24+; the Python 3.11 step is only for regenerating the fixture):
+
+```
+bash scripts/verify-ts.sh             # npm ci, tsc, unit tests, server, API tests
+bash scripts/verify-ts.sh --selftest  # plants defects in a copy; each must fail
+```
+
+A passing run prints one line, for example:
+
+```
+PASS verify-ts: tsc clean; 34 unit tests, 78 API tests; 284/284 prompts agree with the Python gate (verdict, score, rule ids); 171/177 adversarial caught, 4/107 benign over-blocked
+```
+
+How parity is shown: `ts/tools/dump_decisions.py` runs the Python gate over the
+corpus and 68 hand-picked edge prompts and writes `ts/test/fixtures/parity.json`
+(verdict, score and matched rule ids per prompt, plus a fingerprint of every rule's
+pattern text, the homoglyph table and the whitespace set). The tests require the
+TypeScript port to match every record, in-process and again through HTTP. Rule
+patterns stay in their Python spelling and `ts/src/pyre.ts` translates them to
+JavaScript regular expressions; constructs it cannot translate throw instead of being
+guessed at.
+
+Known differences from Python, none of which change a corpus result:
+
+- Unicode data: Python 3.11 uses Unicode 14; Node uses a newer version, so
+  `String.prototype.normalize('NFKC')` and the category lookups can differ for
+  characters added after 14.
+- Python's `html.unescape` raises on a decimal reference with more than 4300 digits and
+  `chr` raises above U+10FFFF in `\U` escapes. The port returns U+FFFD instead of
+  throwing, and the gate still answers.
+- Python's case-insensitive matching treats dotless i as `i`; JavaScript does not. The
+  look-alike fold covers the usual cases first.
+- Rule descriptions and matched snippets are not carried over; the API only needs the
+  rule id and category.
+
+---
 
 ## License
 
